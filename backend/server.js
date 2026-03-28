@@ -22,6 +22,67 @@ const corsOrigins = (process.env.CORS_ORIGIN || '')
 app.use(cors(corsOrigins.length ? { origin: corsOrigins } : undefined));
 app.use(express.json({ limit: '2mb' }));
 
+const DEFAULT_HEADERS = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+  Accept: 'application/rss+xml,application/xml,text/xml,*/*',
+  'Accept-Language': 'en-US,en;q=0.9'
+};
+
+const normalizeUrl = (value) => {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return '';
+  return trimmed.startsWith('http://') || trimmed.startsWith('https://')
+    ? trimmed
+    : `https://${trimmed}`;
+};
+
+const isPostUrl = (value) => {
+  try {
+    const url = new URL(normalizeUrl(value));
+    return /\/p\/[^/?#]+/i.test(url.pathname);
+  } catch {
+    return false;
+  }
+};
+
+const safeSlug = (value) => {
+  const replaced = String(value || '')
+    .replace(/\s+/g, '-')
+    .trim();
+  const cleaned = replaced.replace(/[<>:"/\\|?*]/g, '').replace(/-+/g, '-');
+  return cleaned.replace(/^-+|-+$/g, '');
+};
+
+const stripTrailingSlash = (value) => value.replace(/\/+$/, '');
+
+const buildFeedUrl = (siteUrl) => `${stripTrailingSlash(siteUrl)}/feed`;
+
+const extractRssLinks = (rssText) => {
+  if (!rssText) return [];
+  const items = rssText.match(/<item[\s\S]*?<\/item>/gi) || [];
+  const links = new Set();
+
+  const extractTag = (itemText, tagName) => {
+    const regex = new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, 'i');
+    const match = itemText.match(regex);
+    if (!match) return '';
+    return match[1]
+      .replace(/<!\[CDATA\[/g, '')
+      .replace(/\]\]>/g, '')
+      .trim();
+  };
+
+  for (const item of items) {
+    const link = extractTag(item, 'link') || extractTag(item, 'guid');
+    if (link && isPostUrl(link)) {
+      links.add(link);
+    }
+  }
+
+  return Array.from(links);
+};
+
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection:', reason);
 });
@@ -59,6 +120,10 @@ app.post('/api/convert', async (req, res) => {
     res.status(400).json({ error: 'Missing Substack link.' });
     return;
   }
+  if (!isPostUrl(link)) {
+    res.status(400).json({ error: 'Please provide a single post URL (it should include /p/).' });
+    return;
+  }
 
   try {
     const tempDir = await createTempOutputDir();
@@ -78,6 +143,10 @@ app.post('/api/convert-zip', async (req, res) => {
   const { link, markdown } = req.body || {};
   if (!link || typeof link !== 'string') {
     res.status(400).json({ error: 'Missing Substack link.' });
+    return;
+  }
+  if (!isPostUrl(link)) {
+    res.status(400).json({ error: 'Please provide a single post URL (it should include /p/).' });
     return;
   }
 
@@ -107,6 +176,74 @@ app.post('/api/convert-zip', async (req, res) => {
 
     archive.pipe(res);
     archive.directory(result.postDir, result.postSlug || 'post');
+    await archive.finalize();
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Conversion failed.' });
+  }
+});
+
+app.post('/api/convert-all', async (req, res) => {
+  const { link } = req.body || {};
+  if (!link || typeof link !== 'string') {
+    res.status(400).json({ error: 'Missing Substack link.' });
+    return;
+  }
+
+  if (isPostUrl(link)) {
+    res
+      .status(400)
+      .json({ error: 'Please provide the main Substack URL (not a single post link).' });
+    return;
+  }
+
+  try {
+    const tempDir = await createTempOutputDir();
+    registerTempCleanup(res, tempDir);
+
+    const normalized = normalizeUrl(link);
+    const parsedUrl = new URL(normalized);
+    const siteRoot = `${parsedUrl.protocol}//${parsedUrl.host}`;
+    const feedUrl = buildFeedUrl(siteRoot);
+
+    const feedResponse = await fetch(feedUrl, {
+      headers: DEFAULT_HEADERS,
+      redirect: 'follow'
+    });
+
+    if (!feedResponse.ok) {
+      throw new Error(`Failed to load RSS feed from ${feedUrl}: ${feedResponse.statusText}`);
+    }
+
+    const feedText = await feedResponse.text();
+    const postLinks = extractRssLinks(feedText);
+
+    if (!postLinks.length) {
+      throw new Error('No post links found in the RSS feed.');
+    }
+
+    for (const postLink of postLinks) {
+      await convertSubstackToMarkdown(postLink, { writeFile: true, outputDir: tempDir });
+    }
+
+    const baseHost = parsedUrl.hostname.replace(/^www\./i, '');
+    const zipRoot = safeSlug(baseHost) || 'substack';
+    const zipName = `${zipRoot}.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
+
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    archive.on('error', (err) => {
+      console.error('Zip error:', err.message);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to create zip.' });
+      } else {
+        res.end();
+      }
+    });
+
+    archive.pipe(res);
+    archive.directory(tempDir, zipRoot);
     await archive.finalize();
   } catch (err) {
     res.status(500).json({ error: err.message || 'Conversion failed.' });

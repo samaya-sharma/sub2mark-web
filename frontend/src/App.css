@@ -139,6 +139,31 @@
   width: 100%;
 }
 
+.mode-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.mode-label {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.mode-option input {
+  accent-color: var(--accent);
+}
+
 .link-form {
   display: flex;
   flex-direction: column;
@@ -321,7 +346,92 @@
 .about-panel p {
   margin: 0;
   color: var(--muted);
-  max-width: 70ch;
+  max-width: 100%;
+}
+
+.code-block {
+  background: #0b1220;
+  border: 1px solid #1f2937;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+.code-block-header {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px 10px;
+  background: #0f172a;
+  border-bottom: 1px solid #1f2937;
+}
+
+.code-block-copy {
+  border: 1px solid #334155;
+  background: #0b1220;
+  color: #e2e8f0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+.code-block-copy:hover {
+  background: #111827;
+  border-color: #475569;
+  transform: translateY(-1px);
+}
+
+.code-block-copy:active {
+  transform: translateY(0);
+}
+
+.code-block pre {
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  background: transparent;
+  color: #e2e8f0;
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+.code-block code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.code-block .token.comment {
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.code-block .token.string {
+  color: #7dd3fc;
+}
+
+.code-block .token.number {
+  color: #fbbf24;
+}
+
+.code-block .token.keyword {
+  color: #c4b5fd;
+}
+
+.code-block .token.boolean {
+  color: #fda4af;
+}
+
+.code-block .token.function {
+  color: #5eead4;
+}
+
+.code-block .token.operator {
+  color: #e2e8f0;
+}
+
+.code-block .token.punctuation {
+  color: #94a3b8;
 }
 
 .footer {

@@ -7,11 +7,10 @@ function AboutPage() {
         make quick edits, and export everything as a tidy ZIP with images included.
       </p>
       <p>
-        The goal is simple: keep your writing portable. Use the exported Markdown for backups,
-        newsletters, or publishing workflows that live outside Substack.
+        Only free (i.e non-paywalled) Substack posts are supported. For best results, use the post's main URL (not the AMP version). The tool is designed to handle a wide range of Substack content, but some complex formatting may not convert perfectly. Always review the output before publishing or sharing.
       </p>
       <p>
-        This is just the web version of the sub2mark tool. You can find it <a href="https://github.com/psugam/sub2mark" target="_blank" rel="noopener noreferrer"> <u>on Github</u></a>.
+        This is just the web version of the sub2mark tool. You can find it <a href="https://github.com/samaya-sharma/sub2mark-lib" target="_blank" rel="noopener noreferrer"> <u>on Github</u></a>.
       </p>
     </section>
   )
