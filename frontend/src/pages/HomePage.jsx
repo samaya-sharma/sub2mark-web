@@ -11,6 +11,7 @@ function HomePage({
   zipStatus,
   error,
   wordCount,
+  bulkProgress,
   onConvert,
   onDownloadZip,
   onClear,
@@ -19,6 +20,12 @@ function HomePage({
   onMarkdownChange
 }) {
   const isAllMode = mode === 'all'
+  const progressTotal = bulkProgress?.total || 0
+  const progressDone = bulkProgress?.converted || 0
+  const progressPercent = progressTotal
+    ? Math.min(100, Math.round((progressDone / progressTotal) * 100))
+    : 0
+  const showProgress = isAllMode && progressTotal > 0
 
   return (
     <>
@@ -96,6 +103,7 @@ function HomePage({
             {isAllMode ? (
               <>
               <ul>
+                <li>Works for non-paywalled posts only.</li>
                 <li>
                    We fetch every post from the RSS feed and bundle each post folder (with images)
                 into a single ZIP.
@@ -104,19 +112,34 @@ function HomePage({
                   If there are many posts, the conversion process can take a while.
                 </li>
               </ul>
-               
+              
               </>
             ) : (
               <>
               <ul>
+                <li>Works for non-paywalled posts only.</li>
                 <li>We convert the Substack post into clean Markdown, preserving formatting and structure.</li>
                 <li>Images are downloaded and linked properly in the markdown.</li>
-                <li>You can edit the markdown in the built-in editor to fix any issues or make tweaks.</li>
+                <li>You can edit the markdown in the built-in editor to fix any issues or make tweaks. </li>
+                  <li>
+                  Any changes that you make in the editor here will be reflected in the downloaded files. 
+                  </li>
                 <li>Currently the images are not rendered here in preview but they'll work correctly in downloaded file. </li>
               </ul>
               </>
             )}
           </div>
+          {showProgress ? (
+            <div className="progress-panel" aria-live="polite">
+              <div className="progress-meta">
+                <span>Converted {progressDone} of {progressTotal} posts</span>
+                <span>{progressPercent}%</span>
+              </div>
+              <div className="progress-track">
+                <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
+              </div>
+            </div>
+          ) : null}
           <button className="clear-button" type="button" onClick={onClear}>
             Clear input
           </button>

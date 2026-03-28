@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
 import HomePage from './pages/HomePage.jsx'
-import CodePage from './pages/CodePage.jsx'
 import AboutPage from './pages/AboutPage.jsx'
 import NotFoundPage from './pages/NotFoundPage.jsx'
 import './App.css'
@@ -17,6 +16,13 @@ function App() {
   const [status, setStatus] = useState('idle')
   const [zipStatus, setZipStatus] = useState('idle')
   const [error, setError] = useState('')
+  const [bulkProgress, setBulkProgress] = useState({
+    status: 'idle',
+    converted: 0,
+    total: 0,
+    jobId: '',
+    zipName: ''
+  })
 
   const wordCount = useMemo(() => {
     const trimmed = markdown.trim()
@@ -52,6 +58,46 @@ function App() {
       return 'Please use the main Substack URL (not a single post link).'
     }
     return ''
+  }
+
+  const resetBulkProgress = () => {
+    setBulkProgress({
+      status: 'idle',
+      converted: 0,
+      total: 0,
+      jobId: '',
+      zipName: ''
+    })
+  }
+
+  const pollBulkJob = async (jobId) => {
+    while (true) {
+      const response = await fetch(`${API_BASE}/api/convert-all/status/${jobId}`)
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to load conversion status.')
+      }
+
+      const data = await response.json()
+      setBulkProgress((prev) => ({
+        ...prev,
+        status: data.status,
+        converted: data.converted,
+        total: data.total,
+        zipName: data.zipName || prev.zipName,
+        jobId
+      }))
+
+      if (data.status === 'done') {
+        return data
+      }
+
+      if (data.status === 'error') {
+        throw new Error(data.error || 'Conversion failed.')
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 800))
+    }
   }
 
   const handleConvert = async (event) => {
@@ -105,6 +151,64 @@ function App() {
 
     try {
       setZipStatus('loading')
+      if (mode === 'all') {
+        resetBulkProgress()
+        const startResponse = await fetch(`${API_BASE}/api/convert-all/start`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ link })
+        })
+
+        if (!startResponse.ok) {
+          const data = await startResponse.json().catch(() => ({}))
+          throw new Error(data.error || 'Conversion failed.')
+        }
+
+        const startData = await startResponse.json()
+        setBulkProgress({
+          status: 'running',
+          converted: 0,
+          total: startData.total || 0,
+          jobId: startData.jobId,
+          zipName: startData.zipName || ''
+        })
+
+        await pollBulkJob(startData.jobId)
+
+        const downloadResponse = await fetch(
+          `${API_BASE}/api/convert-all/download/${startData.jobId}`
+        )
+
+        if (!downloadResponse.ok) {
+          const data = await downloadResponse.json().catch(() => ({}))
+          throw new Error(data.error || 'Zip download failed.')
+        }
+
+        const blob = await downloadResponse.blob()
+        const disposition = downloadResponse.headers.get('content-disposition') || ''
+        const match = disposition.match(/filename="([^"]+)"/)
+        const fallbackName = startData.zipName || 'substack.zip'
+        const zipName = match ? match[1] : fallbackName
+
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = zipName
+        anchor.click()
+        URL.revokeObjectURL(url)
+
+        setBulkZipName(zipName)
+        setZipStatus('idle')
+        setBulkProgress((prev) => ({
+          ...prev,
+          status: 'done',
+          converted: prev.total
+        }))
+        return
+      }
+
       const endpoint = mode === 'all' ? '/api/convert-all' : '/api/convert-zip'
       const payload = mode === 'all' ? { link } : { link, markdown }
       const response = await fetch(`${API_BASE}${endpoint}`, {
@@ -132,12 +236,12 @@ function App() {
       anchor.download = zipName
       anchor.click()
       URL.revokeObjectURL(url)
-      if (mode === 'all') {
-        setBulkZipName(zipName)
-      }
       setZipStatus('idle')
     } catch (err) {
       setZipStatus('idle')
+      if (mode === 'all') {
+        resetBulkProgress()
+      }
       setError(err.message || 'Something went wrong.')
     }
   }
@@ -149,6 +253,7 @@ function App() {
     setBulkZipName('')
     setStatus('idle')
     setZipStatus('idle')
+    resetBulkProgress()
     setError('')
   }
 
@@ -180,16 +285,16 @@ function App() {
           </NavLink>
           <NavLink
             className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
-            to="/code"
-          >
-            Code
-          </NavLink>
-          <NavLink
-            className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
             to="/about"
           >
             About
           </NavLink>
+          {/* <NavLink
+            className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
+            to="/about"
+          >
+            About
+          </NavLink> */}
           {/* <a
             className="nav-link"
             href="https://github.com/psugam/sub2mark-lib"
@@ -215,30 +320,33 @@ function App() {
               zipStatus={zipStatus}
               error={error}
               wordCount={wordCount}
+              bulkProgress={bulkProgress}
               onConvert={handleConvert}
               onDownloadZip={handleDownloadZip}
               onClear={handleClear}
               onModeChange={(value) => {
                 setMode(value)
+                resetBulkProgress()
                 setError('')
               }}
               onLinkChange={(event) => {
                 setLink(event.target.value)
                 if (mode === 'all') {
                   setBulkZipName('')
+                  resetBulkProgress()
                 }
               }}
               onMarkdownChange={(event) => setMarkdown(event.target.value)}
             />
           }
         />
-        <Route path="/code" element={<CodePage />} />
         <Route path="/about" element={<AboutPage />} />
+
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
 
       <footer className="footer">
-        <div>Substack to Markdown Converter <br/> Built for writers who want clean, portable drafts.</div>
+        <div> <br/> <br/> Substack to Markdown Converter</div>
       </footer>
     </div>
   )

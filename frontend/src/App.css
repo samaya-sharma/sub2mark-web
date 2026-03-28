@@ -223,6 +223,43 @@
   margin: 0;
 }
 
+.progress-panel {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fff6ec;
+  border: 1px solid #f2d6bf;
+}
+
+.progress-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.progress-track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(239, 108, 59, 0.18);
+  overflow: hidden;
+}
+
+.progress-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(90deg, #ef6c3b, #f2a56f);
+  border-radius: inherit;
+  transition: width 0.25s ease;
+}
+
 .clear-button {
   align-self: flex-start;
   border: 1px solid var(--border);

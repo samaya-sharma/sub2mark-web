@@ -2,7 +2,7 @@ function NotFoundPage() {
   return (
     <section className="panel about-panel">
       <h2>404</h2>
-      <p>That page doesn’t exist. Head back to the converter to keep moving.</p>
+      <p>The page you are looking for doesn't exist.</p>
     </section>
   )
 }

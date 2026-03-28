@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 import express from 'express';
 import cors from 'cors';
 import archiver from 'archiver';
@@ -110,6 +111,70 @@ const registerTempCleanup = (res, tempDir) => {
   res.on('close', cleanup);
 };
 
+const jobs = new Map();
+const JOB_TTL_MS = 30 * 60 * 1000;
+
+const cleanupJob = async (jobId) => {
+  const job = jobs.get(jobId);
+  if (!job) return;
+  jobs.delete(jobId);
+  try {
+    if (job.zipPath) {
+      await fs.promises.rm(job.zipPath, { force: true });
+    }
+    if (job.tempDir) {
+      await fs.promises.rm(job.tempDir, { recursive: true, force: true });
+    }
+  } catch (err) {
+    console.error('Job cleanup error:', err.message);
+  }
+};
+
+const scheduleJobCleanup = (jobId) => {
+  const job = jobs.get(jobId);
+  if (!job) return;
+  if (job.cleanupTimer) {
+    clearTimeout(job.cleanupTimer);
+  }
+  job.cleanupTimer = setTimeout(() => cleanupJob(jobId), JOB_TTL_MS);
+};
+
+const createZipArchive = async (sourceDir, zipRoot, jobId) => {
+  const zipPath = path.join(os.tmpdir(), `substack-${zipRoot}-${jobId}.zip`);
+  await new Promise((resolve, reject) => {
+    const output = fs.createWriteStream(zipPath);
+    const archive = archiver('zip', { zlib: { level: 9 } });
+
+    output.on('close', resolve);
+    output.on('error', reject);
+    archive.on('error', reject);
+
+    archive.pipe(output);
+    archive.directory(sourceDir, zipRoot);
+    archive.finalize();
+  });
+  return zipPath;
+};
+
+const runConvertAllJob = async (job, postLinks) => {
+  try {
+    job.status = 'running';
+    for (const postLink of postLinks) {
+      await convertSubstackToMarkdown(postLink, { writeFile: true, outputDir: job.tempDir });
+      job.converted += 1;
+    }
+
+    job.status = 'zipping';
+    job.zipPath = await createZipArchive(job.tempDir, job.zipRoot, job.id);
+    job.status = 'done';
+    scheduleJobCleanup(job.id);
+  } catch (err) {
+    job.status = 'error';
+    job.error = err.message || 'Conversion failed.';
+    scheduleJobCleanup(job.id);
+  }
+};
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
@@ -180,6 +245,117 @@ app.post('/api/convert-zip', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message || 'Conversion failed.' });
   }
+});
+
+app.post('/api/convert-all/start', async (req, res) => {
+  const { link } = req.body || {};
+  if (!link || typeof link !== 'string') {
+    res.status(400).json({ error: 'Missing Substack link.' });
+    return;
+  }
+
+  if (isPostUrl(link)) {
+    res
+      .status(400)
+      .json({ error: 'Please provide the main Substack URL (not a single post link).' });
+    return;
+  }
+
+  try {
+    const normalized = normalizeUrl(link);
+    const parsedUrl = new URL(normalized);
+    const siteRoot = `${parsedUrl.protocol}//${parsedUrl.host}`;
+    const feedUrl = buildFeedUrl(siteRoot);
+
+    const feedResponse = await fetch(feedUrl, {
+      headers: DEFAULT_HEADERS,
+      redirect: 'follow'
+    });
+
+    if (!feedResponse.ok) {
+      throw new Error(`Failed to load RSS feed from ${feedUrl}: ${feedResponse.statusText}`);
+    }
+
+    const feedText = await feedResponse.text();
+    const postLinks = extractRssLinks(feedText);
+
+    if (!postLinks.length) {
+      throw new Error('No post links found in the RSS feed.');
+    }
+
+    const tempDir = await createTempOutputDir();
+    const baseHost = parsedUrl.hostname.replace(/^www\./i, '');
+    const zipRoot = safeSlug(baseHost) || 'substack';
+    const zipName = `${zipRoot}.zip`;
+    const jobId = crypto.randomUUID();
+
+    const job = {
+      id: jobId,
+      status: 'queued',
+      converted: 0,
+      total: postLinks.length,
+      tempDir,
+      zipRoot,
+      zipName,
+      zipPath: '',
+      error: '',
+      cleanupTimer: null
+    };
+
+    jobs.set(jobId, job);
+    setImmediate(() => runConvertAllJob(job, postLinks));
+
+    res.json({ jobId, total: job.total, zipName });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Conversion failed.' });
+  }
+});
+
+app.get('/api/convert-all/status/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+  if (!job) {
+    res.status(404).json({ error: 'Job not found.' });
+    return;
+  }
+  res.json({
+    status: job.status,
+    converted: job.converted,
+    total: job.total,
+    zipName: job.zipName,
+    error: job.error
+  });
+});
+
+app.get('/api/convert-all/download/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+  if (!job) {
+    res.status(404).json({ error: 'Job not found.' });
+    return;
+  }
+  if (job.status !== 'done' || !job.zipPath) {
+    res.status(409).json({ error: 'Zip is not ready yet.' });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${job.zipName}"`);
+
+  const stream = fs.createReadStream(job.zipPath);
+  stream.on('error', (err) => {
+    console.error('Zip stream error:', err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to read zip.' });
+    } else {
+      res.end();
+    }
+  });
+
+  res.on('finish', () => cleanupJob(jobId));
+  res.on('close', () => cleanupJob(jobId));
+
+  stream.pipe(res);
 });
 
 app.post('/api/convert-all', async (req, res) => {
