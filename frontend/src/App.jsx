@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
 import HomePage from './pages/HomePage.jsx'
 import AboutPage from './pages/AboutPage.jsx'
@@ -23,6 +23,8 @@ function App() {
     jobId: '',
     zipName: ''
   })
+  const [bulkStopping, setBulkStopping] = useState(false)
+  const bulkStopRef = useRef(false)
 
   const wordCount = useMemo(() => {
     const trimmed = markdown.trim()
@@ -61,6 +63,8 @@ function App() {
   }
 
   const resetBulkProgress = () => {
+    bulkStopRef.current = false
+    setBulkStopping(false)
     setBulkProgress({
       status: 'idle',
       converted: 0,
@@ -72,6 +76,9 @@ function App() {
 
   const pollBulkJob = async (jobId) => {
     while (true) {
+      if (bulkStopRef.current) {
+        return { status: 'cancelled' }
+      }
       const response = await fetch(`${API_BASE}/api/convert-all/status/${jobId}`)
       if (!response.ok) {
         const data = await response.json().catch(() => ({}))
@@ -89,6 +96,10 @@ function App() {
       }))
 
       if (data.status === 'done') {
+        return data
+      }
+
+      if (data.status === 'cancelled') {
         return data
       }
 
@@ -152,6 +163,8 @@ function App() {
     try {
       setZipStatus('loading')
       if (mode === 'all') {
+        bulkStopRef.current = false
+        setBulkStopping(false)
         resetBulkProgress()
         const startResponse = await fetch(`${API_BASE}/api/convert-all/start`, {
           method: 'POST',
@@ -175,7 +188,12 @@ function App() {
           zipName: startData.zipName || ''
         })
 
-        await pollBulkJob(startData.jobId)
+        const finalData = await pollBulkJob(startData.jobId)
+        if (finalData.status === 'cancelled') {
+          setZipStatus('idle')
+          setError('Conversion stopped.')
+          return
+        }
 
         const downloadResponse = await fetch(
           `${API_BASE}/api/convert-all/download/${startData.jobId}`
@@ -246,6 +264,32 @@ function App() {
     }
   }
 
+  const handleStopBulk = async () => {
+    if (!bulkProgress.jobId) return
+    setError('')
+    setBulkStopping(true)
+    bulkStopRef.current = true
+    try {
+      const response = await fetch(`${API_BASE}/api/convert-all/stop/${bulkProgress.jobId}`, {
+        method: 'POST'
+      })
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to stop conversion.')
+      }
+      const data = await response.json()
+      setBulkProgress((prev) => ({
+        ...prev,
+        status: data.status || 'cancelled'
+      }))
+      setZipStatus('idle')
+    } catch (err) {
+      setError(err.message || 'Failed to stop conversion.')
+    } finally {
+      setBulkStopping(false)
+    }
+  }
+
   const handleClear = () => {
     setLink('')
     setMarkdown('')
@@ -258,6 +302,9 @@ function App() {
   }
 
   const isAllMode = mode === 'all'
+  const isBulkRunning =
+    isAllMode &&
+    (zipStatus === 'loading' || ['queued', 'running', 'zipping'].includes(bulkProgress.status))
   const outputLabel = isAllMode ? bulkZipName || 'substack.zip' : filename
   const statusLabel = isAllMode
     ? zipStatus === 'loading'
@@ -321,8 +368,11 @@ function App() {
               error={error}
               wordCount={wordCount}
               bulkProgress={bulkProgress}
+              bulkStopping={bulkStopping}
+              isBulkRunning={isBulkRunning}
               onConvert={handleConvert}
               onDownloadZip={handleDownloadZip}
+              onStopBulk={handleStopBulk}
               onClear={handleClear}
               onModeChange={(value) => {
                 setMode(value)

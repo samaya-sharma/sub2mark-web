@@ -113,6 +113,69 @@ const registerTempCleanup = (res, tempDir) => {
 
 const jobs = new Map();
 const JOB_TTL_MS = 30 * 60 * 1000;
+const NEPAL_ONLY_ERROR = 'Sorry. This feature is currently unavailable due to traffic';
+const GEO_CACHE_TTL_MS = 10 * 60 * 1000;
+const geoCache = new Map();
+
+const getClientIp = (req) => {
+  const forwarded = req.headers['x-forwarded-for'];
+  const rawIp = forwarded ? forwarded.split(',')[0].trim() : req.socket?.remoteAddress || req.ip || '';
+  return rawIp.replace(/^::ffff:/, '');
+};
+
+const isPrivateIp = (ip) => {
+  if (!ip) return true;
+  if (ip === '::1') return true;
+  if (ip.includes(':')) {
+    const lower = ip.toLowerCase();
+    return lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80');
+  }
+  if (ip.startsWith('10.')) return true;
+  if (ip.startsWith('192.168.')) return true;
+  if (ip.startsWith('127.')) return true;
+  const parts = ip.split('.').map((part) => Number(part));
+  if (parts.length === 4 && parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  return false;
+};
+
+const fetchCountryForIp = async (ip) => {
+  const cached = geoCache.get(ip);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.country;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2500);
+  try {
+    const response = await fetch(`https://ipapi.co/${ip}/country/`, {
+      headers: { 'User-Agent': 'sub2mark-geo' },
+      signal: controller.signal
+    });
+    if (!response.ok) return '';
+    const country = (await response.text()).trim().toUpperCase();
+    geoCache.set(ip, { country, expiresAt: Date.now() + GEO_CACHE_TTL_MS });
+    return country;
+  } catch (err) {
+    return '';
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const isRequestFromNepal = async (req) => {
+  const ip = getClientIp(req);
+  if (!ip || isPrivateIp(ip)) return false;
+  const country = await fetchCountryForIp(ip);
+  return country === 'NP';
+};
+
+const ensureNepalAccess = async (req, res) => {
+  const allowed = await isRequestFromNepal(req);
+  if (!allowed) {
+    res.status(403).json({ error: NEPAL_ONLY_ERROR });
+    return false;
+  }
+  return true;
+};
 
 const cleanupJob = async (jobId) => {
   const job = jobs.get(jobId);
@@ -139,6 +202,25 @@ const scheduleJobCleanup = (jobId) => {
   job.cleanupTimer = setTimeout(() => cleanupJob(jobId), JOB_TTL_MS);
 };
 
+const deleteJobFiles = async (job) => {
+  try {
+    if (job.zipPath) {
+      await fs.promises.rm(job.zipPath, { force: true });
+    }
+  } catch (err) {
+    console.error('Zip cleanup error:', err.message);
+  }
+  try {
+    if (job.tempDir) {
+      await fs.promises.rm(job.tempDir, { recursive: true, force: true });
+    }
+  } catch (err) {
+    console.error('Temp cleanup error:', err.message);
+  }
+  job.zipPath = '';
+  job.tempDir = '';
+};
+
 const createZipArchive = async (sourceDir, zipRoot, jobId) => {
   const zipPath = path.join(os.tmpdir(), `substack-${zipRoot}-${jobId}.zip`);
   await new Promise((resolve, reject) => {
@@ -158,19 +240,49 @@ const createZipArchive = async (sourceDir, zipRoot, jobId) => {
 
 const runConvertAllJob = async (job, postLinks) => {
   try {
+    if (job.cancelRequested) {
+      job.status = 'cancelled';
+      await deleteJobFiles(job);
+      scheduleJobCleanup(job.id);
+      return;
+    }
     job.status = 'running';
     for (const postLink of postLinks) {
+      if (job.cancelRequested) {
+        job.status = 'cancelled';
+        await deleteJobFiles(job);
+        scheduleJobCleanup(job.id);
+        return;
+      }
       await convertSubstackToMarkdown(postLink, { writeFile: true, outputDir: job.tempDir });
       job.converted += 1;
     }
 
+    if (job.cancelRequested) {
+      job.status = 'cancelled';
+      await deleteJobFiles(job);
+      scheduleJobCleanup(job.id);
+      return;
+    }
+
     job.status = 'zipping';
     job.zipPath = await createZipArchive(job.tempDir, job.zipRoot, job.id);
+    if (job.cancelRequested) {
+      job.status = 'cancelled';
+      await deleteJobFiles(job);
+      scheduleJobCleanup(job.id);
+      return;
+    }
     job.status = 'done';
     scheduleJobCleanup(job.id);
   } catch (err) {
-    job.status = 'error';
-    job.error = err.message || 'Conversion failed.';
+    if (job.cancelRequested) {
+      job.status = 'cancelled';
+      await deleteJobFiles(job);
+    } else {
+      job.status = 'error';
+      job.error = err.message || 'Conversion failed.';
+    }
     scheduleJobCleanup(job.id);
   }
 };
@@ -261,6 +373,10 @@ app.post('/api/convert-all/start', async (req, res) => {
     return;
   }
 
+  if (!(await ensureNepalAccess(req, res))) {
+    return;
+  }
+
   try {
     const normalized = normalizeUrl(link);
     const parsedUrl = new URL(normalized);
@@ -299,7 +415,8 @@ app.post('/api/convert-all/start', async (req, res) => {
       zipName,
       zipPath: '',
       error: '',
-      cleanupTimer: null
+      cleanupTimer: null,
+      cancelRequested: false
     };
 
     jobs.set(jobId, job);
@@ -358,6 +475,27 @@ app.get('/api/convert-all/download/:jobId', (req, res) => {
   stream.pipe(res);
 });
 
+app.post('/api/convert-all/stop/:jobId', async (req, res) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+  if (!job) {
+    res.status(404).json({ error: 'Job not found.' });
+    return;
+  }
+
+  if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') {
+    res.json({ status: job.status });
+    return;
+  }
+
+  job.cancelRequested = true;
+  job.status = 'cancelled';
+  job.error = 'Conversion stopped.';
+  scheduleJobCleanup(jobId);
+
+  res.json({ status: job.status });
+});
+
 app.post('/api/convert-all', async (req, res) => {
   const { link } = req.body || {};
   if (!link || typeof link !== 'string') {
@@ -369,6 +507,10 @@ app.post('/api/convert-all', async (req, res) => {
     res
       .status(400)
       .json({ error: 'Please provide the main Substack URL (not a single post link).' });
+    return;
+  }
+
+  if (!(await ensureNepalAccess(req, res))) {
     return;
   }
 

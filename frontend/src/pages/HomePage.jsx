@@ -12,8 +12,11 @@ function HomePage({
   error,
   wordCount,
   bulkProgress,
+  bulkStopping,
+  isBulkRunning,
   onConvert,
   onDownloadZip,
+  onStopBulk,
   onClear,
   onModeChange,
   onLinkChange,
@@ -26,6 +29,7 @@ function HomePage({
     ? Math.min(100, Math.round((progressDone / progressTotal) * 100))
     : 0
   const showProgress = isAllMode && progressTotal > 0
+  const showStop = isAllMode && isBulkRunning
 
   return (
     <>
@@ -139,6 +143,16 @@ function HomePage({
                 <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
               </div>
             </div>
+          ) : null}
+          {showStop ? (
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={onStopBulk}
+              disabled={bulkStopping}
+            >
+              {bulkStopping ? 'Stopping...' : 'Stop conversion'}
+            </button>
           ) : null}
           <button className="clear-button" type="button" onClick={onClear}>
             Clear input
