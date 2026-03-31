@@ -5,7 +5,7 @@ import AboutPage from './pages/AboutPage.jsx'
 import NotFoundPage from './pages/NotFoundPage.jsx'
 import './App.css'
 
-const API_BASE = import.meta.env.VITE_API_BASE || ''
+const API_BASE = (import.meta.env.VITE_API_BASE || '').trim().replace(/\/+$/, '')
 
 function App() {
   const [mode, setMode] = useState('single')
